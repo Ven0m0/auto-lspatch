@@ -46,13 +46,19 @@ on:
         required: true
         type: boolean
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  LC_ALL: C
+  JVM_FLAGS: "-Dfile.encoding=UTF-8 -Djdk.util.zip.disableZip64ExtraFieldValidation=true -Djdk.nio.zipfs.allowDotZipEntry=true -XX:+UseStringDeduplication -XX:+OptimizeStringConcat -XX:+UseCompressedOops -XX:+TieredCompilation"
+
 jobs:
   Clean:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
       - name: Delete all releases
         run: |
           gh release list --limit 1000 | awk '{print $1}' | while read tag; do
@@ -61,7 +67,6 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Delete all tags
         run: |
           git fetch --tags
@@ -71,7 +76,6 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
@@ -82,19 +86,16 @@ jobs:
 
   build-clients:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@master
         with:
           ref: main
-
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
-
       - name: Create module list
         id: create_module_list
         run: |
@@ -127,12 +128,10 @@ jobs:
           fileName: "app-release.apk"
           repository: Xposed-Modules-Repo/com.my.televip
           latest: true
-
       - name: Rename Televip Module
         if: ${{ github.event.inputs.enable_televip_module == 'true' }}      
         run: mv app-release.apk TeleVip.apk
         shell: bash  
-
       - name: Download SpeedHook Module
         if: ${{ github.event.inputs.enable_speedhook_module == 'true' }}
         uses: robinraju/release-downloader@v1
@@ -140,7 +139,6 @@ jobs:
           fileName: "Telegram.Speed.Hook-*.apk"
           repository: araafroyall/Telegram-Speed-Hook
           latest: true
-
       - name: Download Killergram Module
         if: ${{ github.event.inputs.enable_killergram_module == 'true' }}
         uses: robinraju/release-downloader@v1
@@ -148,7 +146,6 @@ jobs:
           fileName: "Killergram*.apk"
           repository: JeelsBoobz/Killergram
           latest: true
-      
       - name: Download UserID Viewer Module
         if: ${{ github.event.inputs.enable_userid_module == 'true' }}  
         uses: robinraju/release-downloader@v1
@@ -156,14 +153,12 @@ jobs:
           fileName: "com.alex193a.tguseridviewer_v*_*.apk"
           repository: Xposed-Modules-Repo/com.alex193a.tguseridviewer
           latest: true
-
       - name: Download LSPatch Jar from Github
         uses: robinraju/release-downloader@v1
         with:
           fileName: "*.jar"
           repository: JingMatrix/LSPatch
           latest: true
-
       - name: Download and Patch Telegram Client
         run: |
           #Download APK
@@ -172,7 +167,6 @@ jobs:
           #Patch Telegram Client With Modules
           java -jar *.jar -l 2 telegram.apk $(cat module_list.txt)
         shell: bash
-
       - name: Download ForkGram Client
         uses: robinraju/release-downloader@v1
         with:
@@ -180,7 +174,6 @@ jobs:
           repository: forkgram/TelegramAndroid
           latest: true
 
-      
       - name: Patch ForkGram Client With Modules
         run: |
           java -jar *.jar -l 2 ForkClient*.apk $(cat module_list.txt)
@@ -192,12 +185,10 @@ jobs:
           fileName: "TF*.apk"
           repository: Telegram-FOSS-Team/Telegram-FOSS
           latest: true
-
       - name: Patch TelegramFOSS Client With Modules
         run: |
           java -jar *.jar -l 2 TF*.apk $(cat module_list.txt)
         shell: bash
-
       - name: Create Release Info
         run: |
           curl -sSL https://dl.google.com/android/repository/build-tools_r33.0.2-linux.zip -o build-tools.zip
