@@ -2,7 +2,7 @@ name: Download and Patch Modules
 
 on:
   workflow_call:
-    inputs:
+    inputs: &workflow_inputs
       enable_televip_module:
         description: 'Enable TeleVip module'
         default: true
@@ -24,41 +24,27 @@ on:
         required: true
         type: boolean
   workflow_dispatch:
-    inputs:
-      enable_televip_module:
-        description: 'Enable TeleVip module'
-        default: true
-        required: true
-        type: boolean
-      enable_speedhook_module:
-        description: 'Enable SpeedHook module'
-        default: true
-        required: true
-        type: boolean
-      enable_killergram_module:
-        description: 'Enable Killergram module'
-        default: true
-        required: true
-        type: boolean
-      enable_userid_module:
-        description: 'Enable UserID Viewer module'
-        default: true
-        required: true
-        type: boolean
+    inputs: *workflow_inputs
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 env:
   LC_ALL: C
   JVM_FLAGS: "-Dfile.encoding=UTF-8 -Djdk.util.zip.disableZip64ExtraFieldValidation=true -Djdk.nio.zipfs.allowDotZipEntry=true -XX:+UseStringDeduplication -XX:+OptimizeStringConcat -XX:+UseCompressedOops -XX:+TieredCompilation"
+  JAVA_VERSION: '21'
+  BUILD_TOOLS_VERSION: '33.0.2'
 
 jobs:
   Clean:
     runs-on: ubuntu-latest
+    # Only run Clean on workflow_dispatch, not on workflow_call
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
       - name: Delete all releases
         run: |
           gh release list --limit 1000 | awk '{print $1}' | while read tag; do
@@ -67,6 +53,7 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Delete all tags
         run: |
           git fetch --tags
@@ -76,6 +63,7 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
@@ -86,16 +74,37 @@ jobs:
 
   build-clients:
     runs-on: ubuntu-latest
+    needs: [Clean]
+    if: always() && (needs.Clean.result == 'success' || needs.Clean.result == 'skipped')
     steps:
       - name: Checkout code
-        uses: actions/checkout@master
+        uses: actions/checkout@v5
         with:
           ref: main
+
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'gradle'
+
+      - name: Cache build-tools
+        id: cache-build-tools
+        uses: actions/cache@v4
+        with:
+          path: build-tools
+          key: build-tools-${{ env.BUILD_TOOLS_VERSION }}
+
+      - name: Cache LSPatch
+        id: cache-lspatch
+        uses: actions/cache@v4
+        with:
+          path: '*.jar'
+          key: lspatch-${{ hashFiles('**/lspatch-version.txt') }}
+          restore-keys: |
+            lspatch-
+
       - name: Create module list
         id: create_module_list
         run: |
@@ -117,115 +126,107 @@ jobs:
             modules="$modules -m com.alex193a.tguseridviewer_v*_*.apk"
             echo "- UserID Viewer" >> release_body.txt
           fi
-          echo "$modules" > module_list.txt 
+          echo "$modules" > module_list.txt
           echo "" >> release_body.txt
-        shell: bash
 
-      - name: Download TeleVip Module
-        if: ${{ github.event.inputs.enable_televip_module == 'true' }}
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "app-release.apk"
-          repository: Xposed-Modules-Repo/com.my.televip
-          latest: true
-      - name: Rename Televip Module
-        if: ${{ github.event.inputs.enable_televip_module == 'true' }}      
-        run: mv app-release.apk TeleVip.apk
-        shell: bash  
-      - name: Download SpeedHook Module
-        if: ${{ github.event.inputs.enable_speedhook_module == 'true' }}
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "Telegram.Speed.Hook-*.apk"
-          repository: araafroyall/Telegram-Speed-Hook
-          latest: true
-      - name: Download Killergram Module
-        if: ${{ github.event.inputs.enable_killergram_module == 'true' }}
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "Killergram*.apk"
-          repository: JeelsBoobz/Killergram
-          latest: true
-      - name: Download UserID Viewer Module
-        if: ${{ github.event.inputs.enable_userid_module == 'true' }}  
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "com.alex193a.tguseridviewer_v*_*.apk"
-          repository: Xposed-Modules-Repo/com.alex193a.tguseridviewer
-          latest: true
-      - name: Download LSPatch Jar from Github
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "*.jar"
-          repository: JingMatrix/LSPatch
-          latest: true
-      - name: Download and Patch Telegram Client
+      - name: Download modules
         run: |
-          #Download APK
-          curl -L -o telegram.apk https://telegram.org/dl/android/apk
+          # Download modules in parallel using background processes
+          pids=()
 
-          #Patch Telegram Client With Modules
-          java -jar *.jar -l 2 telegram.apk $(cat module_list.txt)
-        shell: bash
-      - name: Download ForkGram Client
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "ForkClient*.apk"
-          repository: forkgram/TelegramAndroid
-          latest: true
+          if [[ "${{ github.event.inputs.enable_televip_module }}" == "true" ]]; then
+            (
+              gh release download --repo Xposed-Modules-Repo/com.my.televip --pattern "app-release.apk" --clobber
+              mv app-release.apk TeleVip.apk
+            ) &
+            pids+=($!)
+          fi
 
-      - name: Patch ForkGram Client With Modules
+          if [[ "${{ github.event.inputs.enable_speedhook_module }}" == "true" ]]; then
+            gh release download --repo araafroyall/Telegram-Speed-Hook --pattern "Telegram.Speed.Hook-*.apk" --clobber &
+            pids+=($!)
+          fi
+
+          if [[ "${{ github.event.inputs.enable_killergram_module }}" == "true" ]]; then
+            gh release download --repo JeelsBoobz/Killergram --pattern "Killergram*.apk" --clobber &
+            pids+=($!)
+          fi
+
+          if [[ "${{ github.event.inputs.enable_userid_module }}" == "true" ]]; then
+            gh release download --repo Xposed-Modules-Repo/com.alex193a.tguseridviewer --pattern "com.alex193a.tguseridviewer_v*_*.apk" --clobber &
+            pids+=($!)
+          fi
+
+          # Wait for all background jobs to complete
+          for pid in "${pids[@]}"; do
+            wait "$pid"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download LSPatch Jar
+        if: steps.cache-lspatch.outputs.cache-hit != 'true'
         run: |
-          java -jar *.jar -l 2 ForkClient*.apk $(cat module_list.txt)
-        shell: bash
+          gh release download --repo JingMatrix/LSPatch --pattern "*.jar" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download And Patch TelegramFOSS Client
-        uses: robinraju/release-downloader@v1
-        with:
-          fileName: "TF*.apk"
-          repository: Telegram-FOSS-Team/Telegram-FOSS
-          latest: true
-      - name: Patch TelegramFOSS Client With Modules
+      - name: Download Telegram clients
         run: |
-          java -jar *.jar -l 2 TF*.apk $(cat module_list.txt)
-        shell: bash
+          # Download clients in parallel
+          curl -L -o telegram.apk https://telegram.org/dl/android/apk &
+          gh release download --repo forkgram/TelegramAndroid --pattern "ForkClient*.apk" --clobber &
+          gh release download --repo Telegram-FOSS-Team/Telegram-FOSS --pattern "TF*.apk" --clobber &
+          wait
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch all clients
+        run: |
+          MODULES=$(cat module_list.txt)
+
+          # Patch clients in parallel
+          java ${{ env.JVM_FLAGS }} -jar *.jar -l 2 telegram.apk $MODULES &
+          java ${{ env.JVM_FLAGS }} -jar *.jar -l 2 ForkClient*.apk $MODULES &
+          java ${{ env.JVM_FLAGS }} -jar *.jar -l 2 TF*.apk $MODULES &
+          wait
+
+      - name: Download build-tools
+        if: steps.cache-build-tools.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL https://dl.google.com/android/repository/build-tools_r${{ env.BUILD_TOOLS_VERSION }}-linux.zip -o build-tools.zip
+          unzip -q build-tools.zip -d build-tools
+
       - name: Create Release Info
         run: |
-          curl -sSL https://dl.google.com/android/repository/build-tools_r33.0.2-linux.zip -o build-tools.zip
-          unzip -q build-tools.zip -d build-tools
           AAPT=build-tools/android-13/aapt
-
           chmod +x "$AAPT"
 
-          TG_INFO=$("$AAPT" dump badging telegram*.apk | grep versionName)
+          # Extract version info
+          TG_INFO=$("$AAPT" dump badging telegram*-lspatched.apk | grep versionName)
           TG_VersionName=$(echo "$TG_INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           TG_VersionCode=$(echo "$TG_INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
-          TG_Version="$TG_VersionName $TG_VersionCode"
 
-          FORK_INFO=$("$AAPT" dump badging ForkClient*.apk | grep versionName)
+          FORK_INFO=$("$AAPT" dump badging ForkClient*-lspatched.apk | grep versionName)
           FORK_VersionName=$(echo "$FORK_INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           FORK_VersionCode=$(echo "$FORK_INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
-          FORK_Version="$FORK_VersionName $FORK_VersionCode"
 
-          TGFOSS_INFO=$("$AAPT" dump badging TF*.apk | grep versionName)
+          TGFOSS_INFO=$("$AAPT" dump badging TF*-lspatched.apk | grep versionName)
           TGFOSS_VersionName=$(echo "$TGFOSS_INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           TGFOSS_VersionCode=$(echo "$TGFOSS_INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
-          TGFOSS_Version="$TGFOSS_VersionName $TGFOSS_VersionCode"
 
+          # Append to release body
           echo "Clients:" >> release_body.txt
-          echo "- Telegram - $TG_Version" >> release_body.txt
-          echo "- ForkGram - $FORK_Version" >> release_body.txt
-          echo "- TelegramFOSS - $TGFOSS_Version" >> release_body.txt
+          echo "- Telegram - $TG_VersionName $TG_VersionCode" >> release_body.txt
+          echo "- ForkGram - $FORK_VersionName $FORK_VersionCode" >> release_body.txt
+          echo "- TelegramFOSS - $TGFOSS_VersionName $TGFOSS_VersionCode" >> release_body.txt
           echo "" >> release_body.txt
           echo "Patched at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> release_body.txt
-        shell: bash
 
       - name: Upload Release
-        id: upload_release
-        uses: softprops/action-gh-release@master
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            *-lspatched.apk
+          files: '*-lspatched.apk'
           tag_name: LSpatched
           draft: false
           body_path: release_body.txt
